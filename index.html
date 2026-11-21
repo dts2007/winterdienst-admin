@@ -277,7 +277,8 @@ function render(){
   const onDuty=info.filter(i=>i.open&&i.e.active);
   const alerts=[];
   for(const i of onDuty)if(now-i.open.start>12*60*MIN)alerts.push({kind:"open",i});
-  for(const e of data.recent)if(e.source==="app"&&Math.abs(new Date(e.server_ts)-new Date(e.device_ts))>10*MIN&&new Date(e.device_ts)>now-2*DAY)
+  const activeIds=new Set(data.emps.filter(e=>e.active).map(e=>e.id));
+  for(const e of data.recent)if(activeIds.has(e.employee_id)&&e.source==="app"&&Math.abs(new Date(e.server_ts)-new Date(e.device_ts))>10*MIN&&new Date(e.device_ts)>now-2*DAY)
     alerts.push({kind:"time",e});
 
   $("aTitle").textContent=new Date().toLocaleDateString("de-DE",{weekday:"long",day:"numeric",month:"long"});
