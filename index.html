@@ -125,6 +125,21 @@ dt{color:var(--mute)}dd{margin:0;font-weight:600;overflow-wrap:anywhere}
 .muted{color:var(--mute)}
 .tbl td .small{min-height:38px}
 .acts{display:flex;gap:6px;flex-wrap:wrap}
+.mname{background:none;border:0;padding:0;font:600 16px Barlow,sans-serif;color:var(--ink);cursor:pointer;text-decoration:underline;text-underline-offset:3px;min-height:32px}
+.tsheet{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:14px}
+.tsheet h3{font:700 24px "Barlow Condensed",sans-serif;margin:0 0 2px}
+.tsheet .sub{color:var(--mute);margin-bottom:10px}
+.tsheet tfoot td{font-weight:700;border-top:2px solid var(--ink)}
+.open{color:var(--orange);font-weight:600}
+@media print{
+  .noprint,.ahead,.proto,#loginView,#noAdmin,.veil{display:none!important}
+  body{background:#fff;color:#000}
+  .amain{padding:0}.amain>section{max-width:none;margin:0}
+  #monthSec>.sechead,#monthSec .scroll{display:none}
+  .tsheet{border:0;border-radius:0;padding:0;margin:0 0 0;page-break-after:always}
+  .tsheet:last-child{page-break-after:auto}
+  .tbl{border:1px solid #999;font-size:12px}.tbl th,.tbl td{border-bottom:1px solid #ccc;padding:5px 7px;color:#000}
+}
 .ahead-act{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:#9fb3cc}
 a.link{display:inline-flex;align-items:center;text-decoration:none}
 </style>
@@ -158,19 +173,31 @@ a.link{display:inline-flex;align-items:center;text-decoration:none}
     <div class="kpis" id="kpis"></div>
   </header>
   <main class="amain">
-    <section>
+    <section class="noprint">
       <h2>Jetzt im Dienst</h2>
       <div class="cards" id="onDuty"></div>
     </section>
-    <section id="alertsWrap" hidden>
+    <section class="noprint" id="alertsWrap" hidden>
       <h2>Zu prüfen</h2>
       <div id="alerts"></div>
     </section>
-    <section>
+    <section class="noprint">
       <div class="sechead"><h2>Mitarbeiter</h2><button class="small pri" id="addEmp">+ Mitarbeiter anlegen</button></div>
       <div class="scroll"><table class="tbl" id="empTbl"></table></div>
     </section>
-    <section>
+    <section id="monthSec">
+      <div class="sechead"><h2>Monatsübersicht</h2></div>
+      <div class="period noprint">
+        <label>Monat<input type="month" id="month"></label>
+        <button class="small" id="mLoad">Anzeigen</button>
+        <button class="small" id="mCsv">Monat als CSV</button>
+        <button class="small" id="mPrint">Drucken / PDF</button>
+      </div>
+      <div class="scroll"><table class="tbl" id="monthTbl"></table></div>
+      <p class="note noprint">Auf einen Namen tippen, um den Stundenzettel zu öffnen. Eine Schicht zählt zum Tag ihres Beginns.</p>
+      <div id="sheets"></div>
+    </section>
+    <section class="noprint">
       <div class="sechead"><h2>Einträge</h2></div>
       <div class="period">
         <label>Von<input type="date" id="from"></label>
@@ -217,6 +244,7 @@ const short=v=>(v||"").split(" z.B.")[0];
 const hfmt=m=>Math.floor(m/60)+":"+pad(Math.round(m)%60)+" h";
 const when=ts=>{const d=new Date(ts);return dayKey(d)===dayKey(new Date())?hm(d):dmy(d).slice(0,6)+" "+hm(d)};
 const startOfDay=d=>{const x=new Date(d);x.setHours(0,0,0,0);return x};
+const startOfMonth=d=>new Date(d.getFullYear(),d.getMonth(),1);
 const startOfWeek=()=>{const d=startOfDay(new Date());const wd=(d.getDay()+6)%7;return new Date(d.getTime()-wd*DAY)};
 
 let data={emps:[],devs:[],codes:[],recent:[],range:[]};
@@ -246,7 +274,7 @@ const byEmp=(list,id)=>list.filter(e=>e.employee_id===id).sort((a,b)=>new Date(a
 /* ---------- Laden ---------- */
 async function q(p){const {data:d,error}=await p;if(error)throw error;return d}
 async function loadAll(){
-  const since=new Date(Math.min(startOfWeek().getTime(),Date.now()-2*DAY)-14*DAY).toISOString();
+  const since=new Date(Math.min(startOfWeek().getTime(),startOfMonth(new Date()).getTime(),Date.now()-2*DAY)-2*DAY).toISOString();
   const [emps,devs,codes,recent]=await Promise.all([
     q(sb.from("employees").select("*").order("name")),
     q(sb.from("devices").select("id,employee_id,active,registered_at,last_seen_at").eq("active",true)),
@@ -255,6 +283,7 @@ async function loadAll(){
   Object.assign(data,{emps,devs,codes,recent});
   await loadRange();
   render();
+  await loadMonth();
   $("upd").textContent="Stand "+hm(new Date());
 }
 async function loadRange(){
@@ -266,12 +295,12 @@ async function loadRange(){
 
 /* ---------- Anzeige ---------- */
 function render(){
-  const now=Date.now(),d0=startOfDay(new Date()).getTime(),w0=startOfWeek().getTime();
+  const now=Date.now(),d0=startOfDay(new Date()).getTime(),w0=startOfWeek().getTime(),mo0=startOfMonth(new Date()).getTime();
   const name=id=>data.emps.find(e=>e.id===id)?.name||"?";
   const info=data.emps.map(e=>{
     const sh=shifts(byEmp(data.recent,e.id));
     const last=sh[sh.length-1];
-    return {e,sh,open:last&&!last.end?last:null,today:minutesIn(sh,d0,now),week:minutesIn(sh,w0,now),
+    return {e,sh,open:last&&!last.end?last:null,today:minutesIn(sh,d0,now),week:minutesIn(sh,w0,now),month:minutesIn(sh,mo0,now),
       dev:data.devs.find(d=>d.employee_id===e.id),code:data.codes.find(c=>c.employee_id===e.id)};
   });
   const onDuty=info.filter(i=>i.open&&i.e.active);
@@ -293,13 +322,13 @@ function render(){
     ?`<div class="alert"><span><b>${esc(a.i.e.name)}</b>: Begin ${when(a.i.open.start)}, seit über 12 Stunden kein Ende.</span><button class="small" data-fix="${a.i.e.id}">Ende nachtragen</button></div>`
     :`<div class="alert"><span><b>${esc(name(a.e.employee_id))}</b>: ${LABEL[a.e.type]} mit Handy-Uhrzeit ${when(a.e.device_ts)}, beim Server angekommen ${when(a.e.server_ts)}. Uhr am Handy prüfen (oder Eintrag kam offline später an).</span></div>`).join("");
 
-  $("empTbl").innerHTML=`<thead><tr><th>Name</th><th>Status</th><th>Handy</th><th class="num">Heute</th><th class="num">Diese Woche</th><th></th></tr></thead><tbody>`+
+  $("empTbl").innerHTML=`<thead><tr><th>Name</th><th>Status</th><th>Handy</th><th class="num">Heute</th><th class="num">Diese Woche</th><th class="num">Dieser Monat</th><th></th></tr></thead><tbody>`+
     (info.length?info.map(i=>`<tr><td>${esc(i.e.name)}</td>
     <td>${!i.e.active?'<span class="pill p-off">deaktiviert</span>':i.open?'<span class="pill p-on">im Dienst</span>':'<span class="pill p-off">frei</span>'}</td>
     <td>${i.dev?'<span class="pill p-on">registriert</span>':i.code?`<span class="pill p-code">Code ${i.code.code} offen</span>`:'<span class="pill p-off">kein Handy</span>'}</td>
-    <td class="num">${hfmt(i.today)}</td><td class="num">${hfmt(i.week)}</td>
+    <td class="num">${hfmt(i.today)}</td><td class="num">${hfmt(i.week)}</td><td class="num">${hfmt(i.month)}</td>
     <td><div class="acts"><button class="small" data-code="${i.e.id}">Neuer Code</button><button class="small" data-act="${i.e.id}" data-v="${!i.e.active}">${i.e.active?"Deaktivieren":"Aktivieren"}</button></div></td></tr>`).join("")
-    :'<tr><td colspan="6">Noch keine Mitarbeiter. Oben rechts anlegen.</td></tr>')+"</tbody>";
+    :'<tr><td colspan="7">Noch keine Mitarbeiter. Oben rechts anlegen.</td></tr>')+"</tbody>";
 
   $("logTbl").innerHTML=`<thead><tr><th>Zeit (Handy)</th><th>Name</th><th>Aktion</th><th>Details</th></tr></thead><tbody>`+
     (data.range.length?data.range.map(e=>`<tr><td style="white-space:nowrap">${dmy(new Date(e.device_ts))} ${hm(new Date(e.device_ts))}</td><td>${esc(name(e.employee_id))}</td><td>${LABEL[e.type]}</td><td>${esc([short(e.detail),e.comment].filter(Boolean).join(" · "))}</td></tr>`).join("")
@@ -392,6 +421,82 @@ $("csvHours").onclick=async()=>{
 };
 $("load").onclick=async()=>{try{await loadRange();render()}catch(err){fail(err)}};
 $("addEmp").onclick=addEmployee;
+
+/* ---------- Monatsübersicht / Stundenzettel ---------- */
+const MONTHS=["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
+let mData={from:null,to:null,rows:[]};
+function shiftsDetailed(list){ // wie shifts(), mit Ende-Kommentar und Fahrzeug
+  const out=[];let cur=null;
+  for(const e of list){
+    const t=new Date(e.device_ts).getTime();
+    if(e.type==="begin"){if(cur)out.push(cur);cur={start:t,end:null,pause:0,veh:short(e.detail),notes:[],src:e.source}}
+    else if(e.type==="pause"&&cur){cur.pause+=parseInt(e.detail)||0;if(e.comment)cur.notes.push(e.comment)}
+    else if(e.type==="ende"&&cur){cur.end=t;if(e.comment)cur.notes.push(e.comment);out.push(cur);cur=null}
+  }
+  if(cur)out.push(cur);
+  return out.map(s=>({...s,min:Math.max(0,((s.end??Date.now())-s.start)/MIN-s.pause)}));
+}
+async function loadMonth(){
+  const v=$("month").value||(()=>{const d=new Date();return d.getFullYear()+"-"+pad(d.getMonth()+1)})();
+  $("month").value=v;
+  const [y,m]=v.split("-").map(Number);
+  const from=new Date(y,m-1,1),to=new Date(y,m,1);
+  const list=await q(sb.from("entries").select("*").gte("device_ts",from.toISOString()).lt("device_ts",new Date(to.getTime()+DAY).toISOString()).order("device_ts").limit(20000));
+  const rows=data.emps.map(e=>{
+    const sh=shiftsDetailed(byEmp(list,e.id)).filter(s=>s.start>=from.getTime()&&s.start<to.getTime());
+    const days=new Set(sh.map(s=>dayKey(new Date(s.start)))).size;
+    const min=sh.reduce((a,s)=>a+s.min,0),pause=sh.reduce((a,s)=>a+s.pause,0);
+    return {e,sh,days,min,pause};
+  });
+  mData={from,to,rows,label:MONTHS[m-1]+" "+y};
+  renderMonth();
+}
+function renderMonth(){
+  const rows=mData.rows.filter(r=>r.sh.length||r.e.active);
+  const tot=rows.reduce((a,r)=>({d:a.d+r.days,m:a.m+r.min,p:a.p+r.pause}),{d:0,m:0,p:0});
+  $("monthTbl").innerHTML=`<thead><tr><th>Name</th><th class="num">Arbeitstage</th><th class="num">Stunden</th><th class="num">Pausen</th><th class="num">Ø pro Tag</th><th class="num">Offene Schichten</th></tr></thead><tbody>`+
+    (rows.length?rows.map(r=>`<tr><td><button class="mname" data-sheet="${r.e.id}">${esc(r.e.name)}</button>${r.e.active?"":' <span class="pill p-off">deaktiviert</span>'}</td>
+      <td class="num">${r.days}</td><td class="num">${hfmt(r.min)}</td><td class="num">${hfmt(r.pause)}</td>
+      <td class="num">${r.days?hfmt(r.min/r.days):"–"}</td><td class="num">${r.sh.filter(s=>!s.end).length||""}</td></tr>`).join("")
+     :'<tr><td colspan="6">Keine Daten in diesem Monat.</td></tr>')+
+    `</tbody><tfoot><tr><td><b>Gesamt ${esc(mData.label)}</b></td><td class="num"><b>${tot.d}</b></td><td class="num"><b>${hfmt(tot.m)}</b></td><td class="num"><b>${hfmt(tot.p)}</b></td><td></td><td></td></tr></tfoot>`;
+  $("monthTbl").querySelectorAll("[data-sheet]").forEach(b=>b.onclick=()=>toggleSheet(b.dataset.sheet));
+  $("sheets").innerHTML="";
+}
+function sheetHtml(r){
+  return `<div class="tsheet" data-for="${r.e.id}"><h3>Stundenzettel ${esc(r.e.name)}</h3><div class="sub">${esc(mData.label)} · Winterdienst</div>
+  <div class="scroll"><table class="tbl"><thead><tr><th>Datum</th><th>Begin</th><th>Ende</th><th class="num">Pause</th><th class="num">Arbeitszeit</th><th>Fahrzeug</th><th>Kommentar</th></tr></thead><tbody>`+
+  (r.sh.length?r.sh.map(s=>{const b=new Date(s.start),en=s.end?new Date(s.end):null;
+    return `<tr><td style="white-space:nowrap">${new Date(s.start).toLocaleDateString("de-DE",{weekday:"short"})} ${dmy(b)}</td><td>${hm(b)}</td>
+    <td>${en?(dayKey(en)!==dayKey(b)?dmy(en).slice(0,6)+" ":"")+hm(en):'<span class="open">offen</span>'}</td><td class="num">${s.pause?s.pause+" min":""}</td>
+    <td class="num">${hfmt(s.min)}</td><td>${esc(s.veh)}</td><td>${esc(s.notes.join(" · "))}${s.src==="admin"?" (Chef)":""}</td></tr>`}).join("")
+   :'<tr><td colspan="7">Keine Schichten.</td></tr>')+
+  `</tbody><tfoot><tr><td colspan="3">Summe: ${r.days} Arbeitstage</td><td class="num">${hfmt(r.pause)}</td><td class="num">${hfmt(r.min)}</td><td colspan="2"></td></tr></tfoot></table></div></div>`;
+}
+function toggleSheet(id){
+  const ex=$("sheets").querySelector(`[data-for="${id}"]`);
+  if(ex){ex.remove();return}
+  const r=mData.rows.find(x=>x.e.id===id);if(!r)return;
+  $("sheets").insertAdjacentHTML("beforeend",sheetHtml(r));
+  $("sheets").lastElementChild.scrollIntoView({behavior:"smooth",block:"start"});
+}
+$("mLoad").onclick=async()=>{try{await loadMonth()}catch(err){fail(err)}};
+$("month").onchange=$("mLoad").onclick;
+$("mCsv").onclick=()=>{
+  const rows=[["Monat","Name","Datum","Begin","Ende","Pause (min)","Arbeitszeit (dezimal)","Arbeitszeit (h:mm)","Fahrzeug","Kommentar"]];
+  for(const r of mData.rows){
+    if(!r.sh.length)continue;
+    for(const s of r.sh){const b=new Date(s.start),en=s.end?new Date(s.end):null;
+      rows.push([mData.label,r.e.name,dmy(b),hm(b),en?dmy(en)+" "+hm(en):"offen",s.pause,(s.min/60).toFixed(2).replace(".",","),hfmt(s.min).replace(" h",""),s.veh,s.notes.join(" · ")])}
+    rows.push([mData.label,r.e.name,"SUMME",r.days+" Tage","",r.pause,(r.min/60).toFixed(2).replace(".",","),hfmt(r.min).replace(" h",""),"",""]);
+  }
+  download("winterdienst_monat_"+$("month").value+".csv",rows);
+};
+$("mPrint").onclick=()=>{
+  // alle Stundenzettel mit Schichten zum Drucken öffnen
+  $("sheets").innerHTML=mData.rows.filter(r=>r.sh.length).map(sheetHtml).join("")||'<p class="empty">Keine Schichten in diesem Monat.</p>';
+  setTimeout(()=>window.print(),100);
+};
 
 /* ---------- Anmeldung ---------- */
 async function show(){
