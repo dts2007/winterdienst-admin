@@ -131,6 +131,10 @@ dt{color:var(--mute)}dd{margin:0;font-weight:600;overflow-wrap:anywhere}
 .tsheet .sub{color:var(--mute);margin-bottom:10px}
 .tsheet tfoot td{font-weight:700;border-top:2px solid var(--ink)}
 .open{color:var(--orange);font-weight:600}
+.edit{color:var(--orange);font-weight:600;white-space:nowrap}
+.p-wait{background:light-dark(#fff1e3,#3a2410);color:light-dark(#8a4300,#ffb066)}
+.p-no{background:light-dark(#fdeaea,#3a1517);color:var(--red)}
+.mini{min-height:34px;padding:0 10px;font-size:14px}
 @media print{
   .noprint,.ahead,.proto,#loginView,#noAdmin,.veil{display:none!important}
   body{background:#fff;color:#000}
@@ -184,6 +188,11 @@ a.link{display:inline-flex;align-items:center;text-decoration:none}
     <section class="noprint">
       <div class="sechead"><h2>Mitarbeiter</h2><button class="small pri" id="addEmp">+ Mitarbeiter anlegen</button></div>
       <div class="scroll"><table class="tbl" id="empTbl"></table></div>
+    </section>
+    <section class="noprint" id="reqSec">
+      <div class="sechead"><h2>Änderungsanfragen</h2></div>
+      <p class="note" style="margin-top:0">Zeiten ändert der Chef nur per Anfrage. Erst wenn der Mitarbeiter in der App bestätigt, wird die Zeit übernommen und als „geändert vom Chef“ markiert.</p>
+      <div class="scroll"><table class="tbl" id="reqTbl"></table></div>
     </section>
     <section id="monthSec">
       <div class="sechead"><h2>Monatsübersicht</h2></div>
@@ -275,12 +284,13 @@ const byEmp=(list,id)=>list.filter(e=>e.employee_id===id).sort((a,b)=>new Date(a
 async function q(p){const {data:d,error}=await p;if(error)throw error;return d}
 async function loadAll(){
   const since=new Date(Math.min(startOfWeek().getTime(),startOfMonth(new Date()).getTime(),Date.now()-2*DAY)-2*DAY).toISOString();
-  const [emps,devs,codes,recent]=await Promise.all([
+  const [emps,devs,codes,recent,reqs]=await Promise.all([
     q(sb.from("employees").select("*").order("name")),
     q(sb.from("devices").select("id,employee_id,active,registered_at,last_seen_at").eq("active",true)),
     q(sb.from("activation_codes").select("*").is("used_at",null).gt("expires_at",new Date().toISOString())),
-    q(sb.from("entries").select("*").gte("device_ts",since).order("device_ts"))]);
-  Object.assign(data,{emps,devs,codes,recent});
+    q(sb.from("entries").select("*").gte("device_ts",since).order("device_ts")),
+    q(sb.from("change_requests").select("*").gte("created_at",new Date(Date.now()-60*DAY).toISOString()).order("created_at",{ascending:false}).limit(300))]);
+  Object.assign(data,{emps,devs,codes,recent,reqs});
   await loadRange();
   render();
   await loadMonth();
@@ -317,9 +327,11 @@ function render(){
     .map(([v,l,c])=>`<div class="kpi ${c||""}"><b>${v}</b><span>${l}</span></div>`).join("");
   $("onDuty").innerHTML=onDuty.length?onDuty.map(i=>`<div class="card"><div class="n">${esc(i.e.name)}</div><div class="v">seit ${when(i.open.start)} · ${esc(short(i.open.veh))}</div><div class="dur">${hfmt(minutesIn([i.open],i.open.start,now))}</div></div>`).join(""):'<p class="empty">Gerade niemand im Dienst.</p>';
 
+  const pend=(data.reqs||[]).filter(r=>r.status==="pending");
+  if(pend.length)alerts.push({kind:"pend",n:pend.length});
   $("alertsWrap").hidden=!alerts.length;
-  $("alerts").innerHTML=alerts.map(a=>a.kind==="open"
-    ?`<div class="alert"><span><b>${esc(a.i.e.name)}</b>: Begin ${when(a.i.open.start)}, seit über 12 Stunden kein Ende.</span><button class="small" data-fix="${a.i.e.id}">Ende nachtragen</button></div>`
+  $("alerts").innerHTML=alerts.map(a=>a.kind==="pend"?`<div class="alert" style="background:light-dark(#fff8ef,#2a1d10);border-color:light-dark(#f3d2a8,#5a3a18)"><span><b style="color:var(--orange)">${a.n} ${a.n===1?"Änderung wartet":"Änderungen warten"}</b> auf Bestätigung durch den Mitarbeiter.</span></div>`:a.kind==="open"
+    ?`<div class="alert"><span><b>${esc(a.i.e.name)}</b>: Begin ${when(a.i.open.start)}, seit über 12 Stunden kein Ende.</span><button class="small" data-fix="${a.i.e.id}">Ende nachtragen (Anfrage)</button></div>`
     :`<div class="alert"><span><b>${esc(name(a.e.employee_id))}</b>: ${LABEL[a.e.type]} mit Handy-Uhrzeit ${when(a.e.device_ts)}, beim Server angekommen ${when(a.e.server_ts)}. Uhr am Handy prüfen (oder Eintrag kam offline später an).</span></div>`).join("");
 
   $("empTbl").innerHTML=`<thead><tr><th>Name</th><th>Status</th><th>Handy</th><th class="num">Heute</th><th class="num">Diese Woche</th><th class="num">Dieser Monat</th><th></th></tr></thead><tbody>`+
@@ -327,16 +339,32 @@ function render(){
     <td>${!i.e.active?'<span class="pill p-off">deaktiviert</span>':i.open?'<span class="pill p-on">im Dienst</span>':'<span class="pill p-off">frei</span>'}</td>
     <td>${i.dev?'<span class="pill p-on">registriert</span>':i.code?`<span class="pill p-code">Code ${i.code.code} offen</span>`:'<span class="pill p-off">kein Handy</span>'}</td>
     <td class="num">${hfmt(i.today)}</td><td class="num">${hfmt(i.week)}</td><td class="num">${hfmt(i.month)}</td>
-    <td><div class="acts"><button class="small" data-code="${i.e.id}">Neuer Code</button><button class="small" data-act="${i.e.id}" data-v="${!i.e.active}">${i.e.active?"Deaktivieren":"Aktivieren"}</button></div></td></tr>`).join("")
+    <td><div class="acts">${i.e.active?`<button class="small" data-add="${i.e.id}">Nachtragen</button>`:""}<button class="small" data-code="${i.e.id}">Neuer Code</button><button class="small" data-act="${i.e.id}" data-v="${!i.e.active}">${i.e.active?"Deaktivieren":"Aktivieren"}</button></div></td></tr>`).join("")
     :'<tr><td colspan="7">Noch keine Mitarbeiter. Oben rechts anlegen.</td></tr>')+"</tbody>";
 
-  $("logTbl").innerHTML=`<thead><tr><th>Zeit (Handy)</th><th>Name</th><th>Aktion</th><th>Details</th></tr></thead><tbody>`+
-    (data.range.length?data.range.map(e=>`<tr><td style="white-space:nowrap">${dmy(new Date(e.device_ts))} ${hm(new Date(e.device_ts))}</td><td>${esc(name(e.employee_id))}</td><td>${LABEL[e.type]}</td><td>${esc([short(e.detail),e.comment].filter(Boolean).join(" · "))}</td></tr>`).join("")
-    :'<tr><td colspan="4">Keine Einträge im gewählten Zeitraum.</td></tr>')+"</tbody>";
+  const pendIds=new Set(pend.filter(r=>r.entry_id).map(r=>r.entry_id));
+  $("logTbl").innerHTML=`<thead><tr><th>Zeit (Handy)</th><th>Name</th><th>Aktion</th><th>Details</th><th></th></tr></thead><tbody>`+
+    (data.range.length?data.range.map(e=>`<tr><td style="white-space:nowrap">${dmy(new Date(e.device_ts))} ${hm(new Date(e.device_ts))}</td><td>${esc(name(e.employee_id))}</td><td>${LABEL[e.type]}</td>
+    <td>${esc([short(e.detail),e.comment].filter(Boolean).join(" · "))}${e.edited?` <span class="edit">✎ geändert vom Chef${e.original_ts?" (vorher "+dmy(new Date(e.original_ts)).slice(0,6)+" "+hm(new Date(e.original_ts))+")":""}</span>`:""}</td>
+    <td>${pendIds.has(e.id)?'<span class="pill p-wait">Anfrage offen</span>':`<button class="small mini" data-edit="${e.id}">Ändern</button>`}</td></tr>`).join("")
+    :'<tr><td colspan="5">Keine Einträge im gewählten Zeitraum.</td></tr>')+"</tbody>";
+
+  const ST={pending:'<span class="pill p-wait">wartet</span>',approved:'<span class="pill p-on">bestätigt</span>',rejected:'<span class="pill p-no">abgelehnt</span>',cancelled:'<span class="pill p-off">zurückgezogen</span>'};
+  const rq=data.reqs||[];
+  $("reqTbl").innerHTML=`<thead><tr><th>Angefragt</th><th>Name</th><th>Änderung</th><th>Grund</th><th>Status</th><th></th></tr></thead><tbody>`+
+    (rq.length?rq.map(r=>{const n=new Date(r.new_ts),o=r.old_ts?new Date(r.old_ts):null;
+      return `<tr><td style="white-space:nowrap">${when(r.created_at)}</td><td>${esc(name(r.employee_id))}</td>
+      <td>${r.kind==="edit"?"Ändern":"Nachtragen"}: ${LABEL[r.entry_type]}${r.detail?" · "+esc(short(r.detail)):""}<br><span style="white-space:nowrap">${o?`<s>${dmy(o).slice(0,6)} ${hm(o)}</s> → `:""}<b>${dmy(n).slice(0,6)} ${hm(n)}</b></span></td>
+      <td>${esc(r.reason)}</td><td>${ST[r.status]||r.status}${r.decided_at&&r.status!=="pending"?`<br><small>${when(r.decided_at)}</small>`:""}</td>
+      <td>${r.status==="pending"?`<button class="small mini" data-cancel="${r.id}">Zurückziehen</button>`:""}</td></tr>`}).join("")
+    :'<tr><td colspan="6">Noch keine Anfragen.</td></tr>')+"</tbody>";
 
   $("admin").querySelectorAll("[data-code]").forEach(b=>b.onclick=()=>issueCode(b.dataset.code));
   $("admin").querySelectorAll("[data-act]").forEach(b=>b.onclick=()=>setActive(b.dataset.act,b.dataset.v==="true"));
-  $("admin").querySelectorAll("[data-fix]").forEach(b=>b.onclick=()=>fixEnd(b.dataset.fix));
+  $("admin").querySelectorAll("[data-fix]").forEach(b=>b.onclick=()=>requestAdd(b.dataset.fix,"ende"));
+  $("admin").querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>requestAdd(b.dataset.add,null));
+  $("admin").querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>requestEdit(+b.dataset.edit));
+  $("admin").querySelectorAll("[data-cancel]").forEach(b=>b.onclick=()=>cancelRequest(+b.dataset.cancel));
 }
 
 /* ---------- Dialoge ---------- */
@@ -379,17 +407,50 @@ function addEmployee(){
     try{const {data:r,error}=await sb.rpc("admin_create_employee",{p_name:v});if(error)throw error;await loadAll();showCode(v,r.code,true)}
     catch(err){$("nnErr").textContent=err.message}};
 }
-function fixEnd(id){
-  const e=data.emps.find(x=>x.id===id),n=new Date();
-  open(`<h3>Ende nachtragen</h3><div class="stamp">${esc(e.name)} hat den Dienst nicht beendet. Wann war das Ende?</div>
-  <div class="period"><label>Datum<input type="date" id="fxD" value="${dayKey(n)}"></label><label>Uhrzeit<input type="time" id="fxT" value="${hm(n)}"></label></div>
-  <p class="note" id="fxErr">Wird als „nachgetragen vom Chef“ gespeichert.</p>
-  <button class="btn b-ende go" id="fxOk">Speichern</button><button class="ghost" id="fxNo">Abbrechen</button>`);
-  $("fxNo").onclick=close;
-  $("fxOk").onclick=async()=>{
-    const ts=new Date($("fxD").value+"T"+$("fxT").value);
-    if(isNaN(ts)){$("fxErr").textContent="Bitte Datum und Uhrzeit angeben.";return}
-    try{const {error}=await sb.rpc("admin_add_end",{p_employee_id:id,p_ts:ts.toISOString()});if(error)throw error;close();loadAll()}catch(err){fail(err)}};
+const VEH=["Multicar 1","Multicar 2","Unimog","Schneefräse","Manuelle Arbeiten z.B. Besen, Handstreuung, Schaufel"];
+const PAUSES=["15 min","30 min","45 min","60 min"];
+const sentInfo=name=>`<h3>Anfrage gesendet</h3><div class="stamp">${esc(name)} sieht die Anfrage in der App. Erst nach seiner Bestätigung wird die Zeit übernommen – sie ist dann als „geändert vom Chef“ markiert.</div><button class="btn b-begin go" id="okS">OK</button>`;
+function requestAdd(empId,fixedType){
+  const e=data.emps.find(x=>x.id===empId),n=new Date();
+  open(`<h3>${fixedType==="ende"?"Ende nachtragen":"Eintrag nachtragen"}</h3><div class="stamp">für <b>${esc(e.name)}</b> – wird als Anfrage an die App geschickt.</div>
+  ${fixedType?"":`<label class="l" for="raT">Aktion</label><select id="raT" class="small" style="width:100%"><option value="begin">Begin Winterdienst</option><option value="pause">Pause</option><option value="ende" selected>Ende Winterdienst</option></select>`}
+  <div id="raDetWrap"></div>
+  <div class="period"><label>Datum<input type="date" id="raD" value="${dayKey(n)}"></label><label>Uhrzeit<input type="time" id="raH" value="${hm(n)}"></label></div>
+  <label class="l" for="raR">Grund (sieht der Mitarbeiter)</label><input type="text" id="raR" maxlength="300" placeholder="z.B. Ende vergessen, laut Absprache 15:00">
+  <p class="err" id="raErr"></p>
+  <button class="btn b-begin go" id="raOk">Anfrage senden</button><button class="ghost" id="raNo">Abbrechen</button>`);
+  const typ=()=>fixedType||$("raT").value;
+  const det=()=>{const t=typ();$("raDetWrap").innerHTML=t==="begin"?`<label class="l" for="raV">Fahrzeug</label><select id="raV" class="small" style="width:100%">${VEH.map(v=>`<option>${v}</option>`).join("")}</select>`:t==="pause"?`<label class="l" for="raV">Pause</label><select id="raV" class="small" style="width:100%">${PAUSES.map(v=>`<option>${v}</option>`).join("")}</select>`:""};
+  det();if(!fixedType)$("raT").onchange=det;
+  $("raNo").onclick=close;
+  $("raOk").onclick=async()=>{
+    const ts=new Date($("raD").value+"T"+$("raH").value),reason=$("raR").value.trim();
+    if(isNaN(ts)){$("raErr").textContent="Bitte Datum und Uhrzeit angeben.";return}
+    if(!reason){$("raErr").textContent="Bitte einen Grund angeben – der Mitarbeiter sieht ihn.";return}
+    try{const {error}=await sb.rpc("admin_request_add",{p_employee_id:empId,p_type:typ(),p_ts:ts.toISOString(),p_detail:$("raV")?$("raV").value:"",p_reason:reason});if(error)throw error;
+      await loadAll();open(sentInfo(e.name));$("okS").onclick=close}
+    catch(err){$("raErr").textContent=err.message}};
+}
+function requestEdit(entryId){
+  const en=data.range.find(x=>x.id===entryId);if(!en)return;
+  const emp=data.emps.find(x=>x.id===en.employee_id),d=new Date(en.device_ts);
+  open(`<h3>Zeit ändern</h3><div class="stamp"><b>${esc(emp?.name||"?")}</b> · ${LABEL[en.type]}${en.detail?" · "+esc(short(en.detail)):""}<br>Bisher: ${dmy(d)} ${hm(d)}</div>
+  <div class="period"><label>Neues Datum<input type="date" id="reD" value="${dayKey(d)}"></label><label>Neue Uhrzeit<input type="time" id="reH" value="${hm(d)}"></label></div>
+  <label class="l" for="reR">Grund (sieht der Mitarbeiter)</label><input type="text" id="reR" maxlength="300" placeholder="z.B. laut Absprache Feierabend 15:00">
+  <p class="err" id="reErr"></p>
+  <button class="btn b-begin go" id="reOk">Anfrage senden</button><button class="ghost" id="reNo">Abbrechen</button>`);
+  $("reNo").onclick=close;
+  $("reOk").onclick=async()=>{
+    const ts=new Date($("reD").value+"T"+$("reH").value),reason=$("reR").value.trim();
+    if(isNaN(ts)){$("reErr").textContent="Bitte Datum und Uhrzeit angeben.";return}
+    if(hm(ts)===hm(d)&&dayKey(ts)===dayKey(d)){$("reErr").textContent="Die Zeit ist unverändert.";return}
+    if(!reason){$("reErr").textContent="Bitte einen Grund angeben – der Mitarbeiter sieht ihn.";return}
+    try{const {error}=await sb.rpc("admin_request_edit",{p_entry_id:entryId,p_new_ts:ts.toISOString(),p_reason:reason});if(error)throw error;
+      await loadAll();open(sentInfo(emp?.name||""));$("okS").onclick=close}
+    catch(err){$("reErr").textContent=err.message==="already_pending"?"Für diesen Eintrag wartet schon eine Anfrage.":err.message}};
+}
+async function cancelRequest(id){
+  try{const {error}=await sb.rpc("admin_cancel_request",{p_id:id});if(error)throw error;loadAll()}catch(err){fail(err)}
 }
 
 /* ---------- Export ---------- */
@@ -401,8 +462,8 @@ function download(name,rows){
 const rangeName=()=>dayKey(data.rangeFrom)+"_bis_"+dayKey(new Date(data.rangeTo-DAY));
 $("csvEntries").onclick=()=>{
   const name=id=>data.emps.find(e=>e.id===id)?.name||"?";
-  download("winterdienst_eintraege_"+rangeName()+".csv",[["Datum","Uhrzeit (Handy)","Name","Aktion","Fahrzeug / Pause","Kommentar","Eingang Server","Quelle"],
-    ...data.range.slice().reverse().map(e=>{const d=new Date(e.device_ts),s=new Date(e.server_ts);return [dmy(d),hm(d),name(e.employee_id),LABEL[e.type],e.detail,e.comment,dmy(s)+" "+hm(s),e.source==="admin"?"Chef":"App"]})]);
+  download("winterdienst_eintraege_"+rangeName()+".csv",[["Datum","Uhrzeit","Name","Aktion","Fahrzeug / Pause","Kommentar","Eingang Server","Quelle","Geändert vom Chef","Ursprüngliche Zeit"],
+    ...data.range.slice().reverse().map(e=>{const d=new Date(e.device_ts),s=new Date(e.server_ts);const o=e.original_ts?new Date(e.original_ts):null;return [dmy(d),hm(d),name(e.employee_id),LABEL[e.type],e.detail,e.comment,dmy(s)+" "+hm(s),e.source==="admin"?"Chef (bestätigt)":"App",e.edited?"ja":"",o?dmy(o)+" "+hm(o):""]})]);
 };
 $("csvHours").onclick=async()=>{
   try{
@@ -437,9 +498,9 @@ function shiftsDetailed(list){ // wie shifts(), mit Ende-Kommentar und Fahrzeug
   const out=[];let cur=null;
   for(const e of list){
     const t=new Date(e.device_ts).getTime();
-    if(e.type==="begin"){if(cur)out.push(cur);cur={start:t,end:null,pause:0,veh:short(e.detail),notes:[],src:e.source}}
-    else if(e.type==="pause"&&cur){cur.pause+=parseInt(e.detail)||0;if(e.comment)cur.notes.push(e.comment)}
-    else if(e.type==="ende"&&cur){cur.end=t;if(e.comment)cur.notes.push(e.comment);out.push(cur);cur=null}
+    if(e.type==="begin"){if(cur)out.push(cur);cur={start:t,end:null,pause:0,veh:short(e.detail),notes:[],src:e.source,edited:!!e.edited}}
+    else if(e.type==="pause"&&cur){cur.pause+=parseInt(e.detail)||0;if(e.comment)cur.notes.push(e.comment);if(e.edited)cur.edited=true}
+    else if(e.type==="ende"&&cur){cur.end=t;if(e.comment)cur.notes.push(e.comment);if(e.edited)cur.edited=true;out.push(cur);cur=null}
   }
   if(cur)out.push(cur);
   return out.map(s=>({...s,min:Math.max(0,((s.end??Date.now())-s.start)/MIN-s.pause)}));
@@ -478,7 +539,7 @@ function sheetHtml(r){
   (r.sh.length?r.sh.map(s=>{const b=new Date(s.start),en=s.end?new Date(s.end):null;
     return `<tr><td style="white-space:nowrap">${new Date(s.start).toLocaleDateString("de-DE",{weekday:"short"})} ${dmy(b)}</td><td>${hm(b)}</td>
     <td>${en?(dayKey(en)!==dayKey(b)?dmy(en).slice(0,6)+" ":"")+hm(en):'<span class="open">offen</span>'}</td><td class="num">${s.pause?s.pause+" min":""}</td>
-    <td class="num">${hfmt(s.min)}</td><td>${esc(s.veh)}</td><td>${esc(s.notes.join(" · "))}${s.src==="admin"?" (Chef)":""}</td></tr>`}).join("")
+    <td class="num">${hfmt(s.min)}</td><td>${esc(s.veh)}</td><td>${esc(s.notes.join(" · "))}${s.edited?' <span class="edit">✎ geändert vom Chef</span>':""}</td></tr>`}).join("")
    :'<tr><td colspan="7">Keine Schichten.</td></tr>')+
   `</tbody><tfoot><tr><td colspan="3">Summe: ${r.days} Arbeitstage</td><td class="num">${hfmt(r.pause)}</td><td class="num">${hfmt(r.min)}</td><td colspan="2"></td></tr></tfoot></table></div></div>`;
 }
@@ -492,11 +553,11 @@ function toggleSheet(id){
 $("mLoad").onclick=async()=>{try{await loadMonth()}catch(err){fail(err)}};
 $("month").onchange=$("mLoad").onclick;
 $("mCsv").onclick=()=>{
-  const rows=[["Monat","Name","Datum","Begin","Ende","Pause (min)","Arbeitszeit (dezimal)","Arbeitszeit (h:mm)","Fahrzeug","Kommentar"]];
+  const rows=[["Monat","Name","Datum","Begin","Ende","Pause (min)","Arbeitszeit (dezimal)","Arbeitszeit (h:mm)","Fahrzeug","Kommentar","Geändert vom Chef"]];
   for(const r of mData.rows){
     if(!r.sh.length)continue;
     for(const s of r.sh){const b=new Date(s.start),en=s.end?new Date(s.end):null;
-      rows.push([mData.label,r.e.name,dmy(b),hm(b),en?dmy(en)+" "+hm(en):"offen",s.pause,(s.min/60).toFixed(2).replace(".",","),hfmt(s.min).replace(" h",""),s.veh,s.notes.join(" · ")])}
+      rows.push([mData.label,r.e.name,dmy(b),hm(b),en?dmy(en)+" "+hm(en):"offen",s.pause,(s.min/60).toFixed(2).replace(".",","),hfmt(s.min).replace(" h",""),s.veh,s.notes.join(" · "),s.edited?"ja":""])}
     rows.push([mData.label,r.e.name,"SUMME",r.days+" Tage","",r.pause,(r.min/60).toFixed(2).replace(".",","),hfmt(r.min).replace(" h",""),"",""]);
   }
   rows.push([]);rows.push(["Wochenübersicht "+mData.label,"Name",...mData.weeks.map(w=>"KW "+w.kw+" ("+w.label+")"),"Monat gesamt"]);
