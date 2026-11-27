@@ -423,6 +423,14 @@ $("load").onclick=async()=>{try{await loadRange();render()}catch(err){fail(err)}
 $("addEmp").onclick=addEmployee;
 
 /* ---------- Monatsübersicht / Stundenzettel ---------- */
+function isoWeek(d){const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));const day=t.getUTCDay()||7;t.setUTCDate(t.getUTCDate()+4-day);const y0=new Date(Date.UTC(t.getUTCFullYear(),0,1));return Math.ceil(((t-y0)/DAY+1)/7)}
+function weeksOfMonth(from,to){ // Kalenderwochen (Mo–So), die den Monat schneiden
+  const out=[];const d=new Date(from);d.setDate(d.getDate()-((d.getDay()+6)%7));
+  while(d<to){const a=new Date(d),b=new Date(d);b.setDate(b.getDate()+7);
+    out.push({kw:isoWeek(a),from:Math.max(a.getTime(),from.getTime()),to:Math.min(b.getTime(),to.getTime()),label:dmy(new Date(Math.max(a,from))).slice(0,6)+"–"+dmy(new Date(Math.min(b,to)-1)).slice(0,6)});
+    d.setDate(d.getDate()+7)}
+  return out;
+}
 const MONTHS=["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
 let mData={from:null,to:null,rows:[]};
 function shiftsDetailed(list){ // wie shifts(), mit Ende-Kommentar und Fahrzeug
@@ -448,18 +456,19 @@ async function loadMonth(){
     const min=sh.reduce((a,s)=>a+s.min,0),pause=sh.reduce((a,s)=>a+s.pause,0);
     return {e,sh,days,min,pause};
   });
-  mData={from,to,rows,label:MONTHS[m-1]+" "+y};
+  mData={from,to,rows,label:MONTHS[m-1]+" "+y,weeks:weeksOfMonth(from,to)};
   renderMonth();
 }
 function renderMonth(){
   const rows=mData.rows.filter(r=>r.sh.length||r.e.active);
   const tot=rows.reduce((a,r)=>({d:a.d+r.days,m:a.m+r.min,p:a.p+r.pause}),{d:0,m:0,p:0});
-  $("monthTbl").innerHTML=`<thead><tr><th>Name</th><th class="num">Arbeitstage</th><th class="num">Stunden</th><th class="num">Pausen</th><th class="num">Ø pro Tag</th><th class="num">Offene Schichten</th></tr></thead><tbody>`+
+  const W=mData.weeks,wk=(r,w)=>r.sh.filter(x=>x.start>=w.from&&x.start<w.to).reduce((a,x)=>a+x.min,0);
+  $("monthTbl").innerHTML=`<thead><tr><th>Name</th>${W.map(w=>`<th class="num" title="${w.label}">KW ${w.kw}<br><small style="font-weight:400">${w.label}</small></th>`).join("")}<th class="num">Monat</th><th class="num">Tage</th><th class="num">Pausen</th><th class="num">Ø pro Tag</th><th class="num">Offen</th></tr></thead><tbody>`+
     (rows.length?rows.map(r=>`<tr><td><button class="mname" data-sheet="${r.e.id}">${esc(r.e.name)}</button>${r.e.active?"":' <span class="pill p-off">deaktiviert</span>'}</td>
-      <td class="num">${r.days}</td><td class="num">${hfmt(r.min)}</td><td class="num">${hfmt(r.pause)}</td>
+      ${W.map(w=>{const v=wk(r,w);return `<td class="num">${v?hfmt(v):"–"}</td>`}).join("")}<td class="num"><b>${hfmt(r.min)}</b></td><td class="num">${r.days}</td><td class="num">${hfmt(r.pause)}</td>
       <td class="num">${r.days?hfmt(r.min/r.days):"–"}</td><td class="num">${r.sh.filter(s=>!s.end).length||""}</td></tr>`).join("")
-     :'<tr><td colspan="6">Keine Daten in diesem Monat.</td></tr>')+
-    `</tbody><tfoot><tr><td><b>Gesamt ${esc(mData.label)}</b></td><td class="num"><b>${tot.d}</b></td><td class="num"><b>${hfmt(tot.m)}</b></td><td class="num"><b>${hfmt(tot.p)}</b></td><td></td><td></td></tr></tfoot>`;
+     :`<tr><td colspan="${W.length+6}">Keine Daten in diesem Monat.</td></tr>`)+
+    `</tbody><tfoot><tr><td><b>Gesamt ${esc(mData.label)}</b></td>${W.map(w=>`<td class="num"><b>${hfmt(rows.reduce((a,r)=>a+wk(r,w),0))}</b></td>`).join("")}<td class="num"><b>${hfmt(tot.m)}</b></td><td class="num"><b>${tot.d}</b></td><td class="num"><b>${hfmt(tot.p)}</b></td><td></td><td></td></tr></tfoot>`;
   $("monthTbl").querySelectorAll("[data-sheet]").forEach(b=>b.onclick=()=>toggleSheet(b.dataset.sheet));
   $("sheets").innerHTML="";
 }
@@ -490,6 +499,9 @@ $("mCsv").onclick=()=>{
       rows.push([mData.label,r.e.name,dmy(b),hm(b),en?dmy(en)+" "+hm(en):"offen",s.pause,(s.min/60).toFixed(2).replace(".",","),hfmt(s.min).replace(" h",""),s.veh,s.notes.join(" · ")])}
     rows.push([mData.label,r.e.name,"SUMME",r.days+" Tage","",r.pause,(r.min/60).toFixed(2).replace(".",","),hfmt(r.min).replace(" h",""),"",""]);
   }
+  rows.push([]);rows.push(["Wochenübersicht "+mData.label,"Name",...mData.weeks.map(w=>"KW "+w.kw+" ("+w.label+")"),"Monat gesamt"]);
+  for(const r of mData.rows){if(!r.sh.length)continue;
+    rows.push(["",r.e.name,...mData.weeks.map(w=>hfmt(r.sh.filter(x=>x.start>=w.from&&x.start<w.to).reduce((a,x)=>a+x.min,0)).replace(" h","")),hfmt(r.min).replace(" h","")])}
   download("winterdienst_monat_"+$("month").value+".csv",rows);
 };
 $("mPrint").onclick=()=>{
