@@ -480,7 +480,7 @@ $("csvHours").onclick=async()=>{
     download("winterdienst_stunden_"+rangeName()+".csv",rows);
   }catch(err){fail(err)}
 };
-$("load").onclick=async()=>{try{await loadRange();render()}catch(err){fail(err)}};
+$("load").onclick=async()=>{try{await loadAll()}catch(err){fail(err)}};
 $("addEmp").onclick=addEmployee;
 
 /* ---------- Monatsübersicht / Stundenzettel ---------- */
